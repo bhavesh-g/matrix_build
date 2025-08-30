@@ -22,15 +22,15 @@ jobs:
       - name: Determine Python Versions and Incompatibilities
         id: set-versions
         run: |
-          # List all versions to test
-          echo 'matrix=["3.7", "3.8", "3.9", "3.10", "3.11", "3.12"]' >> $GITHUB_OUTPUT
-          # List versions that will intentionally fail (less than 3.10)
-          echo 'failures=["3.7", "3.8", "3.9"]' >> $GITHUB_OUTPUT
+          # Versions to test (add/remove as needed)
+          echo 'matrix=["3.7","3.8","3.9","3.10","3.11","3.12","3.13-dev"]' >> "$GITHUB_OUTPUT"
+          # Versions expected to fail intentionally (<3.10) due to pattern matching
+          echo 'failures=["3.7","3.8","3.9"]' >> "$GITHUB_OUTPUT"
 
       - name: Set Build Information
         id: set-info
         run: |
-          echo "name=build-$(date +'%Y%m%d-%H%M%S')" >> $GITHUB_OUTPUT
+          echo "name=build-$(date +'%Y%m%d-%H%M%S')" >> "$GITHUB_OUTPUT"
 
   build:
     name: Python ${{ matrix.python-version }}
@@ -38,102 +38,73 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
-      max-parallel: 6
+      max-parallel: 8
       matrix:
         python-version: ${{ fromJson(needs.setup.outputs.python-versions) }}
-    continue-on-error: ${{ contains(fromJson(needs.setup.outputs.incompatible-versions), matrix.python-version) }}
+    # Do not fail the workflow for versions we expect to fail intentionally
+    continue-on-error: ${{ contains(fromJson(needs.setup.outputs.incompatible-versions), matrix.python-version) || matrix.python-version == '3.13-dev' }}
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
 
       - name: Setup Python
+        id: setup-python
         uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip
 
       - name: Install Dependencies
+        id: install
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Build Application
+      - name: Build Application (import test)
+        id: build-app
         run: |
           python - << 'EOF'
-          import sys
-          from fastapi import FastAPI
-          from pydantic import BaseModel
-
-          app = FastAPI(title="Python Compatibility Demo", version="1.0.0")
-
-          class Status(BaseModel):
-              python_version: str
-              compatible: bool
-
-          @app.get("/", response_model=Status)
-          def root():
-              return {
-                  "python_version": f"{sys.version_info.major}.{sys.version_info.minor}",
-                  "compatible": sys.version_info >= (3, 10)
-              }
-
-          @app.get("/pattern-match")
-          def pattern_match():
-              # Will cause syntax error for <3.10, OK for >=3.10
-              version_info = sys.version_info
-              match version_info:
-                  case (3, v, *_) if v >= 10:
-                      detail = "Pattern matching supported"
-                  case _:
-                      detail = "Incompatible Python version"
-              return {
-                  "detail": detail,
-                  "python_version": f"{version_info.major}.{version_info.minor}"
-              }
+          from app.main import app
+          print("Imported app:", bool(app))
+          print("Routes:", len(app.routes))
           EOF
 
       - name: Version Compatibility Check
+        id: compat
         run: |
           python - << 'EOF'
           import sys
-          # For older versions, the above pattern match causes syntax error
           if sys.version_info < (3, 10):
-              raise RuntimeError("Intentional failure: pattern matching requires Python >=3.10")
-          print(f"Python {sys.version_info.major}.{sys.version_info.minor} is compatible")
+              raise SystemExit("Intentional incompatibility: requires Python >= 3.10 for pattern matching")
+          print("Compatible Python:", sys.version)
           EOF
 
-      - name: Test FastAPI Startup
+      - name: Runtime Smoke Test
+        id: runtime
+        if: steps.build-app.outcome == 'success' && steps.compat.outcome == 'success'
         run: |
           timeout 10s python -m uvicorn app.main:app --host 0.0.0.0 --port 8000 &
           sleep 3
           curl -f http://localhost:8000/ || exit 1
           curl -f http://localhost:8000/pattern-match || exit 1
-          pkill -f uvicorn
+          pkill -f uvicorn || true
 
-      - name: Build Summary
+      - name: Write Compatibility Status
+        id: write-status
+        if: always()
         run: |
-          echo "## Build Summary for Python ${{ matrix.python-version }}" >> $GITHUB_STEP_SUMMARY
-          echo "- Dependencies installed" >> $GITHUB_STEP_SUMMARY
-          echo "- Application built" >> $GITHUB_STEP_SUMMARY
-          echo "- Compatibility check executed" >> $GITHUB_STEP_SUMMARY
-          echo "- Runtime responded successfully" >> $GITHUB_STEP_SUMMARY
+          status="incompatible"
+          if [ "${{ steps.build-app.outcome }}" = "success" ] && [ "${{ steps.compat.outcome }}" = "success" ] && [ "${{ steps.runtime.outcome }}" = "success" ]; then
+            status="compatible"
+          fi
+          echo "$status" > "status_${{ matrix.python-version }}.txt"
+          echo "version=${{ matrix.python-version }}" >> "$GITHUB_OUTPUT"
+          echo "status=$status" >> "$GITHUB_OUTPUT"
 
-  compatibility:
-    name: Compatibility Output
-    needs: [setup, build]
-    runs-on: ubuntu-latest
-    if: always()
-    steps:
-      - name: Generate Compatibility Report
-        run: |
-          VERSIONS=(${(fromJson needs.setup.outputs.python-versions)})
-          FAILS=(${(fromJson needs.setup.outputs.incompatible-versions)})
-          PASS=()
-          for v in "${VERSIONS[@]}"; do
-            if [[ " ${FAILS[*]} " == *" $v "* ]]; then
-              continue
-            fi
-            PASS+=("$v")
-          done
-          echo "Compatible versions: ${PASS[*]}"
-          echo "Incompatible versions: ${FAILS[*]}"
+      - name: Upload Status Artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: status-${{ matrix.python-version }}
+          path: status_${{ matrix.python-version }}.txt
+          if-no-files-found: warn
