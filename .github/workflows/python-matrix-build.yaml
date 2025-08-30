@@ -22,9 +22,7 @@ jobs:
       - name: Determine Python Versions and Incompatibilities
         id: set-versions
         run: |
-          # Versions to test (expand as desired)
-          echo 'matrix=["3.7","3.8","3.9","3.10","3.11","3.12","3.13-dev"]' >> "$GITHUB_OUTPUT"
-          # Versions expected to fail intentionally (<3.10 due to pattern matching)
+          echo 'matrix=["3.7","3.8","3.9","3.10","3.11","3.12","3.13"]' >> "$GITHUB_OUTPUT"
           echo 'failures=["3.7","3.8","3.9"]' >> "$GITHUB_OUTPUT"
 
       - name: Set Build Information
@@ -41,8 +39,7 @@ jobs:
       max-parallel: 8
       matrix:
         python-version: ${{ fromJson(needs.setup.outputs.python-versions) }}
-    # Intentional failures and dev builds must not fail the workflow
-    continue-on-error: ${{ contains(fromJson(needs.setup.outputs.incompatible-versions), matrix.python-version) || matrix.python-version == '3.13-dev' }}
+    continue-on-error: ${{ contains(fromJson(needs.setup.outputs.incompatible-versions), matrix.python-version) }}
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
@@ -67,31 +64,43 @@ jobs:
           print("Routes:", len(app.routes))
           EOF
 
-      - name: Version Compatibility Check
+      - name: Version Compatibility Check (3.10+ required)
         id: compat
         run: |
           python - << 'EOF'
           import sys
           if sys.version_info < (3, 10):
               raise SystemExit("Intentional incompatibility: requires Python >= 3.10")
-          print("Compatible Python:", sys.version)
+          print("Compatible base features on:", sys.version)
           EOF
 
-      - name: Runtime Smoke Test
+      - name: Runtime Smoke Test (includes 3.13-only /as13 behavior)
         id: runtime
-        if: steps.build-app.outcome == 'success' && steps.compat.outcome == 'success'
         run: |
           timeout 10s python -m uvicorn app.main:app --host 0.0.0.0 --port 8000 &
           sleep 3
           curl -f http://localhost:8000/ || exit 1
           curl -f http://localhost:8000/pattern-match || exit 1
+          py_ver=$(python -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')")
+          if [ "$py_ver" = "3.13" ]; then
+            echo "Expecting /as13 to succeed on Python 3.13"
+            curl -f http://localhost:8000/as13 || exit 1
+          else
+            echo "Expecting /as13 to fail on Python < 3.13"
+            if curl -fsS http://localhost:8000/as13 >/dev/null; then
+              echo "Unexpected success for /as13 on Python $py_ver"
+              exit 1
+            fi
+          fi
           pkill -f uvicorn || true
 
       - name: Write Compatibility Status
         if: always()
         run: |
           status="incompatible"
-          if [ "${{ steps.build-app.outcome }}" = "success" ] && [ "${{ steps.compat.outcome }}" = "success" ] && [ "${{ steps.runtime.outcome }}" = "success" ]; then
+          if [ "${{ steps.build-app.outcome }}" = "success" ] && \
+             [ "${{ steps.compat.outcome }}" = "success" ] && \
+             [ "${{ steps.runtime.outcome }}" = "success" ]; then
             status="compatible"
           fi
           echo "$status" > "status_${{ matrix.python-version }}.txt"
@@ -133,15 +142,11 @@ jobs:
             if os.path.exists(fn):
               try:
                 with open(fn, "r", encoding="utf-8") as f:
-                  if f.read().strip() == "compatible":
-                    compatible.append(v)
-                  else:
-                    incompatible.append(v)
+                  (compatible if f.read().strip() == "compatible" else incompatible).append(v)
               except Exception:
                 incompatible.append(v)
             else:
               incompatible.append(v)
-          # Emit outputs
           print("Compatible:", " ".join(compatible))
           print("Incompatible:", " ".join(incompatible))
           with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as out:
