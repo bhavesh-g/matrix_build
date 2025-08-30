@@ -24,7 +24,7 @@ jobs:
         run: |
           # Versions to test (expand as desired)
           echo 'matrix=["3.7","3.8","3.9","3.10","3.11","3.12","3.13-dev"]' >> "$GITHUB_OUTPUT"
-          # Versions expected to fail due to intentional Python <3.10 syntax incompatibility
+          # Versions expected to fail intentionally (<3.10 due to pattern matching)
           echo 'failures=["3.7","3.8","3.9"]' >> "$GITHUB_OUTPUT"
 
       - name: Set Build Information
@@ -41,7 +41,7 @@ jobs:
       max-parallel: 8
       matrix:
         python-version: ${{ fromJson(needs.setup.outputs.python-versions) }}
-    # Intentionally incompatible versions and dev versions should not fail the workflow
+    # Intentional failures and dev builds must not fail the workflow
     continue-on-error: ${{ contains(fromJson(needs.setup.outputs.incompatible-versions), matrix.python-version) || matrix.python-version == '3.13-dev' }}
     steps:
       - name: Checkout Code
@@ -73,7 +73,7 @@ jobs:
           python - << 'EOF'
           import sys
           if sys.version_info < (3, 10):
-              raise SystemExit("Intentional incompatibility: requires Python >= 3.10 for pattern matching")
+              raise SystemExit("Intentional incompatibility: requires Python >= 3.10")
           print("Compatible Python:", sys.version)
           EOF
 
@@ -125,21 +125,25 @@ jobs:
           VERSIONS_JSON: ${{ needs.setup.outputs.python-versions }}
         run: |
           python - << 'PY'
-          import json, glob, os
+          import json, os
           versions = json.loads(os.environ["VERSIONS_JSON"])
-          statuses = {}
-          for p in glob.glob("status_*.txt"):
-            v = p.split("_",1)[11].rsplit(".txt",1)
-            try:
-              with open(p,"r",encoding="utf-8") as f:
-                statuses[v] = f.read().strip()
-            except Exception:
-              statuses[v] = "incompatible"
-          compatible = [v for v in versions if statuses.get(v) == "compatible"]
-          incompatible = [v for v in versions if v not in compatible]
+          compatible, incompatible = [], []
+          for v in versions:
+            fn = f"status_{v}.txt"
+            if os.path.exists(fn):
+              try:
+                with open(fn, "r", encoding="utf-8") as f:
+                  if f.read().strip() == "compatible":
+                    compatible.append(v)
+                  else:
+                    incompatible.append(v)
+              except Exception:
+                incompatible.append(v)
+            else:
+              incompatible.append(v)
+          # Emit outputs
           print("Compatible:", " ".join(compatible))
           print("Incompatible:", " ".join(incompatible))
-          # Expose as step outputs
           with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as out:
             out.write(f"compatible={' '.join(compatible)}\n")
             out.write(f"incompatible={' '.join(incompatible)}\n")
