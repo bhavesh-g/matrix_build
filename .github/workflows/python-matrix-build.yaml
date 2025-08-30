@@ -1,15 +1,12 @@
 # .github/workflows/python-matrix-build.yml
 name: Multi-Python Build Matrix
-
 on:
   push:
     branches: [ main, develop ]
   pull_request:
     branches: [ main ]
-
 env:
   FORCE_COLOR: 1
-
 jobs:
   setup:
     name: Setup Build Matrix
@@ -22,7 +19,6 @@ jobs:
         id: set-versions
         run: |
           echo 'matrix=["3.7","3.8","3.9","3.10","3.11","3.12","3.13"]' >> "$GITHUB_OUTPUT"
-
       - name: Set Build Information
         id: set-info
         run: |
@@ -41,18 +37,15 @@ jobs:
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
-
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip
-
       - name: Install Dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-
       - name: Build Application (import test)
         id: build-app
         run: |
@@ -61,17 +54,15 @@ jobs:
           print("Imported app:", bool(app))
           print("Routes:", len(app.routes))
           EOF
-
-      - name: Version Compatibility Check (3.10+ required)
+      - name: Version Compatibility Check (3.10+ required for pattern matching)
         id: compat
         run: |
           python - << 'EOF'
           import sys
           if sys.version_info < (3, 10):
               raise SystemExit("Intentional incompatibility: requires Python >= 3.10")
-          print("Base features OK:", sys.version)
+          print("Compatible base features on:", sys.version)
           EOF
-
       - name: Runtime Smoke Test (enforce 3.13-only /as13 behavior)
         id: runtime
         run: |
@@ -81,17 +72,14 @@ jobs:
           curl -f http://localhost:8000/pattern-match || exit 1
           py_ver=$(python -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')")
           if [ "$py_ver" = "3.13" ]; then
-            echo "Expecting /as13 to succeed on Python 3.13"
             curl -f http://localhost:8000/as13 || exit 1
           else
-            echo "Expecting /as13 to fail on Python < 3.13"
             if curl -fsS http://localhost:8000/as13 >/dev/null; then
               echo "Unexpected success for /as13 on Python $py_ver"
               exit 1
             fi
           fi
           pkill -f uvicorn || true
-
       - name: Write Compatibility Status
         if: always()
         run: |
@@ -102,7 +90,6 @@ jobs:
             status="compatible"
           fi
           echo "$status" > "status_${{ matrix.python-version }}.txt"
-
       - name: Upload Status Artifact
         if: always()
         uses: actions/upload-artifact@v4
@@ -116,13 +103,15 @@ jobs:
     needs: [setup, build]
     runs-on: ubuntu-latest
     if: always()
+    outputs:
+      compatible: ${{ steps.compute.outputs.compatible }}
+      incompatible: ${{ steps.compute.outputs.incompatible }}
     steps:
       - name: Download All Status Artifacts
         uses: actions/download-artifact@v4
         with:
           pattern: status-*
           merge-multiple: true
-
       - name: Compute Compatibility Lists
         id: compute
         env:
@@ -142,17 +131,19 @@ jobs:
                 incompatible.append(v)
             else:
               incompatible.append(v)
-          # Emit compact lines to logs for quick copy/paste
-          print("Compatible:", " ".join(compatible))
-          print("Incompatible:", " ".join(incompatible))
-          # Also write the two-line summary to the run's Summary
-          with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as s:
-            s.write(f"Compatible: {' '.join(compatible)}\n")
-            s.write(f"Incompatible: {' '.join(incompatible)}\n")
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as out:
+            out.write(f"compatible={' '.join(compatible)}\n")
+            out.write(f"incompatible={' '.join(incompatible)}\n")
           PY
-
-      - name: Annotate Summary Lines In Logs
+      - name: Output Compatibility Report
         run: |
-          # Optional: visible annotations in the log
-          echo "::notice title=Compatibility::$(sed -n '1p' $GITHUB_STEP_SUMMARY)"
-          echo "::notice title=Compatibility::$(sed -n '2p' $GITHUB_STEP_SUMMARY)"
+          COMPAT="${{ steps.compute.outputs.compatible }}"
+          INCOMPAT="${{ steps.compute.outputs.incompatible }}"
+          echo "Compatible: ${COMPAT}"
+          echo "Incompatible: ${INCOMPAT}"
+          {
+            echo -n "Compatible: ${COMPAT}"
+            echo
+            echo -n "Incompatible: ${INCOMPAT}"
+            echo
+          } >> "$GITHUB_STEP_SUMMARY"
