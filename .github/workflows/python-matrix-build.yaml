@@ -22,6 +22,118 @@ jobs:
       - name: Determine Python Versions and Incompatibilities
         id: set-versions
         run: |
-          # test these versions
+          # List all versions to test
           echo 'matrix=["3.7", "3.8", "3.9", "3.10", "3.11", "3.12"]' >> $GITHUB_OUTPUT
-          # versions that will intentionally
+          # List versions that will intentionally fail (less than 3.10)
+          echo 'failures=["3.7", "3.8", "3.9"]' >> $GITHUB_OUTPUT
+
+      - name: Set Build Information
+        id: set-info
+        run: |
+          echo "name=build-$(date +'%Y%m%d-%H%M%S')" >> $GITHUB_OUTPUT
+
+  build:
+    name: Python ${{ matrix.python-version }}
+    needs: setup
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      max-parallel: 6
+      matrix:
+        python-version: ${{ fromJson(needs.setup.outputs.python-versions) }}
+    continue-on-error: ${{ contains(fromJson(needs.setup.outputs.incompatible-versions), matrix.python-version) }}
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Build Application
+        run: |
+          python - << 'EOF'
+          import sys
+          from fastapi import FastAPI
+          from pydantic import BaseModel
+
+          app = FastAPI(title="Python Compatibility Demo", version="1.0.0")
+
+          class Status(BaseModel):
+              python_version: str
+              compatible: bool
+
+          @app.get("/", response_model=Status)
+          def root():
+              return {
+                  "python_version": f"{sys.version_info.major}.{sys.version_info.minor}",
+                  "compatible": sys.version_info >= (3, 10)
+              }
+
+          @app.get("/pattern-match")
+          def pattern_match():
+              # Will cause syntax error for <3.10, OK for >=3.10
+              version_info = sys.version_info
+              match version_info:
+                  case (3, v, *_) if v >= 10:
+                      detail = "Pattern matching supported"
+                  case _:
+                      detail = "Incompatible Python version"
+              return {
+                  "detail": detail,
+                  "python_version": f"{version_info.major}.{version_info.minor}"
+              }
+          EOF
+
+      - name: Version Compatibility Check
+        run: |
+          python - << 'EOF'
+          import sys
+          # For older versions, the above pattern match causes syntax error
+          if sys.version_info < (3, 10):
+              raise RuntimeError("Intentional failure: pattern matching requires Python >=3.10")
+          print(f"Python {sys.version_info.major}.{sys.version_info.minor} is compatible")
+          EOF
+
+      - name: Test FastAPI Startup
+        run: |
+          timeout 10s python -m uvicorn app.main:app --host 0.0.0.0 --port 8000 &
+          sleep 3
+          curl -f http://localhost:8000/ || exit 1
+          curl -f http://localhost:8000/pattern-match || exit 1
+          pkill -f uvicorn
+
+      - name: Build Summary
+        run: |
+          echo "## Build Summary for Python ${{ matrix.python-version }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Dependencies installed" >> $GITHUB_STEP_SUMMARY
+          echo "- Application built" >> $GITHUB_STEP_SUMMARY
+          echo "- Compatibility check executed" >> $GITHUB_STEP_SUMMARY
+          echo "- Runtime responded successfully" >> $GITHUB_STEP_SUMMARY
+
+  compatibility:
+    name: Compatibility Output
+    needs: [setup, build]
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      - name: Generate Compatibility Report
+        run: |
+          VERSIONS=(${(fromJson needs.setup.outputs.python-versions)})
+          FAILS=(${(fromJson needs.setup.outputs.incompatible-versions)})
+          PASS=()
+          for v in "${VERSIONS[@]}"; do
+            if [[ " ${FAILS[*]} " == *" $v "* ]]; then
+              continue
+            fi
+            PASS+=("$v")
+          done
+          echo "Compatible versions: ${PASS[*]}"
+          echo "Incompatible versions: ${FAILS[*]}"
