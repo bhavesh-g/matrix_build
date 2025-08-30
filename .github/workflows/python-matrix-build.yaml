@@ -16,115 +16,12 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       python-versions: ${{ steps.set-versions.outputs.matrix }}
+      incompatible-versions: ${{ steps.set-versions.outputs.failures }}
       build-name: ${{ steps.set-info.outputs.name }}
     steps:
-      - name: Determine Python Versions
+      - name: Determine Python Versions and Incompatibilities
         id: set-versions
         run: |
-          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
-            echo 'matrix=["3.10", "3.11", "3.12"]' >> $GITHUB_OUTPUT
-          else
-            echo 'matrix=["3.9", "3.10", "3.11", "3.12", "3.13-dev"]' >> $GITHUB_OUTPUT
-          fi
-
-      - name: Set Build Information
-        id: set-info
-        run: |
-          echo "name=build-$(date +'%Y%m%d-%H%M%S')" >> $GITHUB_OUTPUT
-          echo "target=${{ github.ref_name }}" >> $GITHUB_OUTPUT
-          echo "event=${{ github.event_name }}" >> $GITHUB_OUTPUT
-
-  build:
-    name: Python ${{ matrix.python-version }}
-    needs: setup
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      max-parallel: 6
-      matrix:
-        python-version: ${{ fromJson(needs.setup.outputs.python-versions) }}
-    continue-on-error: ${{ matrix.python-version == '3.13-dev' }}
-    steps:
-      - name: Checkout Code
-        uses: actions/checkout@v4
-
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: ${{ matrix.python-version }}
-          cache: pip
-
-      - name: Install Dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
-
-      - name: Build Application
-        run: |
-          python - << 'EOF'
-          import sys
-          from app.main import app
-          print(f"Build successful on Python {sys.version}")
-          print(f"App title: {app.title}")
-          print(f"Number of routes: {len(app.routes)}")
-          EOF
-
-      - name: Version Compatibility Check
-        run: |
-          python - << 'EOF'
-          import sys
-          print(f"Python {sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}")
-          if sys.version_info >= (3, 10):
-              print("Pattern matching supported")
-          if sys.version_info >= (3, 11):
-              print("Performance optimizations active")
-          if sys.version_info >= (3, 12):
-              print("Latest syntax features available")
-          print("Compatibility check passed")
-          EOF
-
-      - name: Test Application Start
-        run: |
-          timeout 10s python -m uvicorn app.main:app --host 0.0.0.0 --port 8000 &
-          sleep 3
-          curl -f http://localhost:8000/ || exit 1
-          curl -f http://localhost:8000/pattern-match || exit 1
-          pkill -f uvicorn
-
-      - name: Build Summary
-        run: |
-          echo "## Build Summary for Python ${{ matrix.python-version }}" >> $GITHUB_STEP_SUMMARY
-          echo "- Dependencies installed" >> $GITHUB_STEP_SUMMARY
-          echo "- Application built successfully" >> $GITHUB_STEP_SUMMARY
-          echo "- Compatibility validated" >> $GITHUB_STEP_SUMMARY
-          echo "- Runtime test passed" >> $GITHUB_STEP_SUMMARY
-
-  build-status:
-    name: Build Status Summary
-    needs: [setup, build]
-    runs-on: ubuntu-latest
-    if: always()
-    steps:
-      - name: Generate Build Report
-        run: |
-          echo "# Build Results" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "| Python Version | Status |" >> $GITHUB_STEP_SUMMARY
-          echo "|---|---|" >> $GITHUB_STEP_SUMMARY
-          echo "| All versions | Completed |" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "**Build ID:** ${{ needs.setup.outputs.build-name }}" >> $GITHUB_STEP_SUMMARY
-          echo "**Event:** ${{ needs.setup.outputs.event }}" >> $GITHUB_STEP_SUMMARY
-          echo "**Branch:** ${{ needs.setup.outputs.target }}" >> $GITHUB_STEP_SUMMARY
-
-  deploy-check:
-    name: Deploy Readiness
-    needs: [build]
-    runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/main' && needs.build.result == 'success'
-    steps:
-      - name: Deployment Ready
-        run: |
-          echo "All Python versions validated"
-          echo "Application ready for deployment"
-          echo "Supported environments: Python 3.10+"
+          # test these versions
+          echo 'matrix=["3.7", "3.8", "3.9", "3.10", "3.11", "3.12"]' >> $GITHUB_OUTPUT
+          # versions that will intentionally
