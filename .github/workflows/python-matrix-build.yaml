@@ -16,14 +16,13 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       python-versions: ${{ steps.set-versions.outputs.matrix }}
-      incompatible-versions: ${{ steps.set-versions.outputs.failures }}
       build-name: ${{ steps.set-info.outputs.name }}
     steps:
-      - name: Determine Python Versions and Incompatibilities
+      - name: Determine Python Versions
         id: set-versions
         run: |
+          # Versions to test
           echo 'matrix=["3.7","3.8","3.9","3.10","3.11","3.12","3.13"]' >> "$GITHUB_OUTPUT"
-          echo 'failures=["3.7","3.8","3.9"]' >> "$GITHUB_OUTPUT"
 
       - name: Set Build Information
         id: set-info
@@ -39,7 +38,8 @@ jobs:
       max-parallel: 8
       matrix:
         python-version: ${{ fromJson(needs.setup.outputs.python-versions) }}
-    continue-on-error: ${{ contains(fromJson(needs.setup.outputs.incompatible-versions), matrix.python-version) }}
+    # Non-3.13 jobs are allowed to fail (intentional) without failing the workflow
+    continue-on-error: ${{ matrix.python-version != '3.13' }}
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
@@ -64,7 +64,7 @@ jobs:
           print("Routes:", len(app.routes))
           EOF
 
-      - name: Version Compatibility Check (3.10+ required)
+      - name: Version Compatibility Check (3.10+ required for pattern matching)
         id: compat
         run: |
           python - << 'EOF'
@@ -74,7 +74,7 @@ jobs:
           print("Compatible base features on:", sys.version)
           EOF
 
-      - name: Runtime Smoke Test (includes 3.13-only /as13 behavior)
+      - name: Runtime Smoke Test (enforce 3.13-only /as13 behavior)
         id: runtime
         run: |
           timeout 10s python -m uvicorn app.main:app --host 0.0.0.0 --port 8000 &
@@ -85,14 +85,21 @@ jobs:
           if [ "$py_ver" = "3.13" ]; then
             echo "Expecting /as13 to succeed on Python 3.13"
             curl -f http://localhost:8000/as13 || exit 1
+            pkill -f uvicorn || true
+            exit 0
           else
             echo "Expecting /as13 to fail on Python < 3.13"
+            # Fail the step on non-3.13 to mark as incompatible (workflow stays green via continue-on-error)
             if curl -fsS http://localhost:8000/as13 >/dev/null; then
               echo "Unexpected success for /as13 on Python $py_ver"
+              pkill -f uvicorn || true
+              exit 1
+            else
+              echo "As expected, /as13 failed on Python $py_ver"
+              pkill -f uvicorn || true
               exit 1
             fi
           fi
-          pkill -f uvicorn || true
 
       - name: Write Compatibility Status
         if: always()
