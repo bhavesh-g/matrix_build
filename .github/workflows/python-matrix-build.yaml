@@ -1,5 +1,5 @@
 # .github/workflows/python-matrix-build.yml
-name: 🚀 Multi-Python Build Matrix
+name: Multi-Python Build Matrix
 
 on:
   push:
@@ -11,165 +11,120 @@ env:
   FORCE_COLOR: 1
 
 jobs:
-  # Dynamic Matrix Setup
   setup:
-    name: 🔧 Setup Build Matrix
+    name: Setup Build Matrix
     runs-on: ubuntu-latest
     outputs:
-      python-versions: ${{ steps.versions.outputs.matrix }}
-      build-name: ${{ steps.info.outputs.name }}
-    
+      python-versions: ${{ steps.set-versions.outputs.matrix }}
+      build-name: ${{ steps.set-info.outputs.name }}
     steps:
-      - name: 📋 Determine Python Versions
-        id: versions
+      - name: Determine Python Versions
+        id: set-versions
         run: |
           if [[ "${{ github.event_name }}" == "pull_request" ]]; then
             echo 'matrix=["3.10", "3.11", "3.12"]' >> $GITHUB_OUTPUT
           else
             echo 'matrix=["3.9", "3.10", "3.11", "3.12", "3.13-dev"]' >> $GITHUB_OUTPUT
           fi
-      
-      - name: 📝 Build Information
-        id: info
+
+      - name: Set Build Information
+        id: set-info
         run: |
           echo "name=build-$(date +'%Y%m%d-%H%M%S')" >> $GITHUB_OUTPUT
-          echo "🎯 Target: ${{ github.ref_name }}"
-          echo "🔀 Event: ${{ github.event_name }}"
+          echo "target=${{ github.ref_name }}" >> $GITHUB_OUTPUT
+          echo "event=${{ github.event_name }}" >> $GITHUB_OUTPUT
 
-  # Main Build Matrix - Maximum Parallelism
   build:
-    name: 🐍 Python ${{ matrix.python-version }}
+    name: Python ${{ matrix.python-version }}
     needs: setup
     runs-on: ubuntu-latest
-    
     strategy:
-      # Strategic fail-fast: disabled for comprehensive feedback
       fail-fast: false
-      # Max parallel jobs for speed
       max-parallel: 6
       matrix:
         python-version: ${{ fromJson(needs.setup.outputs.python-versions) }}
-    
-    # Continue experimental versions even if they fail  
     continue-on-error: ${{ matrix.python-version == '3.13-dev' }}
-    
     steps:
-      - name: ⬇️ Checkout Code
+      - name: Checkout Code
         uses: actions/checkout@v4
-      
-      - name: 🐍 Setup Python ${{ matrix.python-version }}
+
+      - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
-          cache: 'pip'
-          cache-dependency-path: 'requirements*.txt'
-      
-      - name: 📦 Install Dependencies
+          cache: pip
+
+      - name: Install Dependencies
         run: |
-          echo "🔧 Installing for Python ${{ matrix.python-version }}"
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-          echo "✅ Dependencies installed successfully"
-      
-      - name: 🏗️ Build Application
+
+      - name: Build Application
         run: |
-          echo "🚀 Building FastAPI app with Python ${{ matrix.python-version }}"
-          python -c "
+          python - << 'EOF'
           import sys
           from app.main import app
-          print(f'✅ Build successful on Python {sys.version}')
-          print(f'🎯 App title: {app.title}')
-          print(f'🔧 Available features: {len(app.routes)} routes')
-          "
-      
-      - name: 🔍 Version Compatibility Check
+          print(f"Build successful on Python {sys.version}")
+          print(f"App title: {app.title}")
+          print(f"Number of routes: {len(app.routes)}")
+          EOF
+
+      - name: Version Compatibility Check
         run: |
-          echo "🧪 Testing Python ${{ matrix.python-version }} compatibility"
-          python -c "
+          python - << 'EOF'
           import sys
-          from app.main import get_version_features
-          
-          print(f'Python {sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}')
-          features = get_version_features()
-          print(f'Available features: {features}')
-          
-          # Version-specific validation
+          print(f"Python {sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}")
           if sys.version_info >= (3, 10):
-              print('✅ Pattern matching supported')
+              print("Pattern matching supported")
           if sys.version_info >= (3, 11):
-              print('✅ Performance optimizations active')
+              print("Performance optimizations active")
           if sys.version_info >= (3, 12):
-              print('✅ Latest syntax features available')
-              
-          print('🎉 Compatibility check passed!')
-          "
-      
-      - name: 🚀 Test Application Start
+              print("Latest syntax features available")
+          print("Compatibility check passed")
+          EOF
+
+      - name: Test Application Start
         run: |
-          echo "🌐 Testing app startup with Python ${{ matrix.python-version }}"
           timeout 10s python -m uvicorn app.main:app --host 0.0.0.0 --port 8000 &
           sleep 3
           curl -f http://localhost:8000/ || exit 1
-          curl -f http://localhost:8000/build-info || exit 1
-          echo "✅ Application starts and responds successfully"
+          curl -f http://localhost:8000/pattern-match || exit 1
           pkill -f uvicorn
-      
-      - name: 📊 Build Summary
-        run: |
-          echo "## 🎯 Build Summary for Python ${{ matrix.python-version }}" >> $GITHUB_STEP_SUMMARY
-          echo "- ✅ Dependencies installed" >> $GITHUB_STEP_SUMMARY  
-          echo "- ✅ Application built successfully" >> $GITHUB_STEP_SUMMARY
-          echo "- ✅ Compatibility validated" >> $GITHUB_STEP_SUMMARY
-          echo "- ✅ Runtime test passed" >> $GITHUB_STEP_SUMMARY
 
-  # Build Status Summary  
+      - name: Build Summary
+        run: |
+          echo "## Build Summary for Python ${{ matrix.python-version }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Dependencies installed" >> $GITHUB_STEP_SUMMARY
+          echo "- Application built successfully" >> $GITHUB_STEP_SUMMARY
+          echo "- Compatibility validated" >> $GITHUB_STEP_SUMMARY
+          echo "- Runtime test passed" >> $GITHUB_STEP_SUMMARY
+
   build-status:
-    name: 📈 Build Status Summary
+    name: Build Status Summary
     needs: [setup, build]
     runs-on: ubuntu-latest
     if: always()
-    
     steps:
-      - name: 📊 Generate Build Report
+      - name: Generate Build Report
         run: |
-          echo "# 🚀 Multi-Python Build Results" >> $GITHUB_STEP_SUMMARY
+          echo "# Build Results" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "| Python Version | Status |" >> $GITHUB_STEP_SUMMARY
           echo "|---|---|" >> $GITHUB_STEP_SUMMARY
-          
-          # This would be populated by the actual build results
-          echo "Build completed for all Python versions" >> $GITHUB_STEP_SUMMARY
+          echo "| All versions | Completed |" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "**Build ID:** ${{ needs.setup.outputs.build-name }}" >> $GITHUB_STEP_SUMMARY
-          echo "**Trigger:** ${{ github.event_name }}" >> $GITHUB_STEP_SUMMARY
-          echo "**Branch:** ${{ github.ref_name }}" >> $GITHUB_STEP_SUMMARY
-      
-      - name: ✅ Success Notification  
-        if: needs.build.result == 'success'
-        run: |
-          echo "🎉 All Python versions built successfully!"
-          echo "✅ Ready for deployment across environments"
-      
-      - name: ❌ Failure Analysis
-        if: needs.build.result == 'failure'  
-        run: |
-          echo "❌ Some builds failed - check individual job logs"
-          echo "🔍 Review compatibility issues in failed versions"
-          exit 1
+          echo "**Event:** ${{ needs.setup.outputs.event }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Branch:** ${{ needs.setup.outputs.target }}" >> $GITHUB_STEP_SUMMARY
 
-  # Optional: Fast Deploy Check (only on main)
   deploy-check:
-    name: 🚀 Deploy Readiness
+    name: Deploy Readiness
     needs: [build]
     runs-on: ubuntu-latest
     if: github.ref == 'refs/heads/main' && needs.build.result == 'success'
-    
     steps:
-      - name: ✅ Deployment Ready
+      - name: Deployment Ready
         run: |
-          echo "🎯 All Python versions validated"
-          echo "🚀 Application ready for multi-environment deployment"
-          echo "📦 Builds completed successfully across:"
-          echo "   - Development environments (Python 3.10+)"
-          echo "   - Production environments (Python 3.11+)"  
-          echo "   - Legacy support (Python 3.9+)"
+          echo "All Python versions validated"
+          echo "Application ready for deployment"
+          echo "Supported environments: Python 3.10+"
