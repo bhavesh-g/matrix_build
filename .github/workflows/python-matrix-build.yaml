@@ -1,12 +1,15 @@
 # .github/workflows/python-matrix-build.yml
 name: Multi-Python Build Matrix
+
 on:
   push:
     branches: [ main, develop ]
   pull_request:
     branches: [ main ]
+
 env:
   FORCE_COLOR: 1
+
 jobs:
   setup:
     name: Setup Build Matrix
@@ -18,7 +21,9 @@ jobs:
       - name: Determine Python Versions
         id: set-versions
         run: |
+          # Versions to test
           echo 'matrix=["3.7","3.8","3.9","3.10","3.11","3.12","3.13"]' >> "$GITHUB_OUTPUT"
+
       - name: Set Build Information
         id: set-info
         run: |
@@ -33,19 +38,23 @@ jobs:
       max-parallel: 8
       matrix:
         python-version: ${{ fromJson(needs.setup.outputs.python-versions) }}
+    # Non-3.13 jobs are allowed to fail (intentional) without failing the workflow
     continue-on-error: ${{ matrix.python-version != '3.13' }}
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
+
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip
+
       - name: Install Dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
+
       - name: Build Application (import test)
         id: build-app
         run: |
@@ -54,6 +63,7 @@ jobs:
           print("Imported app:", bool(app))
           print("Routes:", len(app.routes))
           EOF
+
       - name: Version Compatibility Check (3.10+ required for pattern matching)
         id: compat
         run: |
@@ -63,6 +73,7 @@ jobs:
               raise SystemExit("Intentional incompatibility: requires Python >= 3.10")
           print("Compatible base features on:", sys.version)
           EOF
+
       - name: Runtime Smoke Test (enforce 3.13-only /as13 behavior)
         id: runtime
         run: |
@@ -72,14 +83,24 @@ jobs:
           curl -f http://localhost:8000/pattern-match || exit 1
           py_ver=$(python -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')")
           if [ "$py_ver" = "3.13" ]; then
+            echo "Expecting /as13 to succeed on Python 3.13"
             curl -f http://localhost:8000/as13 || exit 1
+            pkill -f uvicorn || true
+            exit 0
           else
+            echo "Expecting /as13 to fail on Python < 3.13"
+            # Fail the step on non-3.13 to mark as incompatible (workflow stays green via continue-on-error)
             if curl -fsS http://localhost:8000/as13 >/dev/null; then
               echo "Unexpected success for /as13 on Python $py_ver"
+              pkill -f uvicorn || true
+              exit 1
+            else
+              echo "As expected, /as13 failed on Python $py_ver"
+              pkill -f uvicorn || true
               exit 1
             fi
           fi
-          pkill -f uvicorn || true
+
       - name: Write Compatibility Status
         if: always()
         run: |
@@ -90,6 +111,7 @@ jobs:
             status="compatible"
           fi
           echo "$status" > "status_${{ matrix.python-version }}.txt"
+
       - name: Upload Status Artifact
         if: always()
         uses: actions/upload-artifact@v4
@@ -112,6 +134,7 @@ jobs:
         with:
           pattern: status-*
           merge-multiple: true
+
       - name: Compute Compatibility Lists
         id: compute
         env:
@@ -131,19 +154,21 @@ jobs:
                 incompatible.append(v)
             else:
               incompatible.append(v)
+          print("Compatible:", " ".join(compatible))
+          print("Incompatible:", " ".join(incompatible))
           with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as out:
             out.write(f"compatible={' '.join(compatible)}\n")
             out.write(f"incompatible={' '.join(incompatible)}\n")
           PY
+
       - name: Output Compatibility Report
         run: |
-          COMPAT="${{ steps.compute.outputs.compatible }}"
-          INCOMPAT="${{ steps.compute.outputs.incompatible }}"
-          echo "Compatible: ${COMPAT}"
-          echo "Incompatible: ${INCOMPAT}"
+          echo "Compatible Python versions: ${{ steps.compute.outputs.compatible }}"
+          echo "Incompatible Python versions: ${{ steps.compute.outputs.incompatible }}"
           {
-            echo -n "Compatible: ${COMPAT}"
-            echo
-            echo -n "Incompatible: ${INCOMPAT}"
-            echo
+            echo "# Compatibility Report"
+            echo ""
+            echo "**Compatible Python versions:** ${{ steps.compute.outputs.compatible }}"
+            echo ""
+            echo "**Incompatible Python versions (intentional or failed):** ${{ steps.compute.outputs.incompatible }}"
           } >> "$GITHUB_STEP_SUMMARY"
